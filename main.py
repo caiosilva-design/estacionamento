@@ -3,7 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, time, timedelta
 import psycopg2
 import os
+import pytz
 app = FastAPI()
+# =========================
+# 🌍 TIMEZONE BRASIL
+# =========================
+tz = pytz.timezone("America/Sao_Paulo")
 # =========================
 # 🔥 CORS
 # =========================
@@ -15,7 +20,7 @@ app.add_middleware(
    allow_headers=["*"],
 )
 # =========================
-# 🔌 CONEXÃO BANCO
+# 🔌 BANCO
 # =========================
 def get_conn():
    return psycopg2.connect(os.getenv("DATABASE_URL"))
@@ -33,7 +38,7 @@ def entrada(data: dict):
    try:
        conn = get_conn()
        cur = conn.cursor()
-       now = datetime.now()
+       now = datetime.now(tz)
        placa = data.get("placa")
        marca = data.get("marca", "N/A")
        modelo = data.get("modelo", "N/A")
@@ -66,23 +71,37 @@ def entrada(data: dict):
        cur.close()
        conn.close()
 # =========================
-# 🔴 SAÍDA
+# 🔴 SAÍDA (ID OU PLACA)
 # =========================
 @app.post("/saida")
 def saida(data: dict):
    try:
        conn = get_conn()
        cur = conn.cursor()
-       cur.execute("""
-           SELECT id, tipo_veiculo, data_entrada
-           FROM estacionamento.tickets
-           WHERE id = %s AND status = 'ativo'
-       """, (data["ticket_id"],))
+       ticket_id = data.get("ticket_id")
+       placa = data.get("placa")
+       # 🔍 busca
+       if ticket_id:
+           cur.execute("""
+               SELECT id, tipo_veiculo, data_entrada
+               FROM estacionamento.tickets
+               WHERE id = %s AND status = 'ativo'
+           """, (ticket_id,))
+       elif placa:
+           cur.execute("""
+               SELECT id, tipo_veiculo, data_entrada
+               FROM estacionamento.tickets
+               WHERE placa = %s AND status = 'ativo'
+               ORDER BY data_entrada DESC
+               LIMIT 1
+           """, (placa,))
+       else:
+           return {"erro": "Informe ticket_id ou placa"}
        ticket = cur.fetchone()
        if not ticket:
            return {"erro": "Ticket não encontrado"}
        ticket_id, tipo, entrada = ticket
-       now = datetime.now()
+       now = datetime.now(tz)
        valor = calcular_valor(entrada, now, tipo)
        cur.execute("""
            UPDATE estacionamento.tickets
@@ -103,26 +122,57 @@ def saida(data: dict):
        cur.close()
        conn.close()
 # =========================
-# 💰 CÁLCULO DE VALOR
+# 💰 CÁLCULO
 # =========================
 def calcular_valor(entrada, saida, tipo):
-   # ⏱️ TOLERÂNCIA 5 MINUTOS
-   if saida - entrada <= timedelta(minutes=5):
+   from datetime import timedelta, time
+   # ⏱️ diferença total
+   diff = saida - entrada
+   minutos = diff.total_seconds() / 60
+   horas = diff.total_seconds() / 3600
+   # 🟢 TOLERÂNCIA
+   if minutos <= 5:
        return 0
-   fechamento = time(18, 0)
-   fechamento_sabado = time(16, 0)
-   is_sabado = entrada.weekday() == 5
-   limite = fechamento_sabado if is_sabado else fechamento
-   # 💰 VALORES
-   if tipo == "grande":
-       diaria = 30
-   elif tipo == "pequeno":
-       diaria = 20
-   elif tipo == "moto":
+   # 🏍️ MOTO (fixo sempre)
+   if tipo == "moto":
        return 15
+   # 🎯 MESMO DIA
+   if entrada.date() == saida.date():
+       # até 1h
+       if horas <= 1:
+           if tipo == "grande":
+               return 20
+           else:
+               return 10
+       # mais de 1h
+       else:
+           if tipo == "grande":
+               return 30
+           else:
+               return 20
+   # 🔴 OUTRO DIA (virou o dia)
    else:
-       diaria = 20
-   # ⏱️ passou do horário
-   if saida.time() > limite:
-       return diaria * 2
-   return diaria
+       fechamento = time(18, 0)
+       # pega o fechamento do dia da entrada
+       fechamento_dt = entrada.replace(
+           hour=18,
+           minute=0,
+           second=0,
+           microsecond=0
+       )
+       # se entrou depois do fechamento → usa entrada mesmo
+       if entrada > fechamento_dt:
+           inicio_calculo = entrada
+       else:
+           inicio_calculo = fechamento_dt
+       diff_noite = saida - inicio_calculo
+       horas_noite = diff_noite.total_seconds() / 3600
+       # 💰 valor base (primeira diária)
+       if tipo == "grande":
+           valor = 30
+       else:
+           valor = 20
+       # 🧮 a cada 12h adiciona diária
+       adicionais = int(horas_noite // 12)
+       valor += adicionais * valor
+       return valor
