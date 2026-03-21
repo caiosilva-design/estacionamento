@@ -2,5 +2,6 @@ fastapi
 uvicorn
 psycopg2-binary
 pytz
-passlib[bcrypt]
+passlib
+bcrypt
 python-jose
