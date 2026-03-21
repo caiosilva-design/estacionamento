@@ -51,6 +51,14 @@ def get_user_id(authorization: str = Header(None)):
 @app.get("/")
 def home():
    return {"status": "ok"}
+
+# =========================
+# 🔑 GERAR HASH (TEMPORÁRIO)
+# =========================
+@app.get("/hash")
+def gerar_hash(senha: str):
+   return {"hash": pwd_context.hash(senha)}
+   
 # =========================
 # 📝 REGISTER
 # =========================
