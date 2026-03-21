@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, time
+from passlib.context import CryptContext
 import psycopg2
 import os
 import pytz
@@ -8,6 +9,7 @@ import pytz
 from jose import jwt
 from passlib.context import CryptContext
 app = FastAPI()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # =========================
 # 🔐 CONFIG LOGIN
 # =========================
