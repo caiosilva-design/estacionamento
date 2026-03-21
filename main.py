@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 import psycopg2
 import os
 import pytz
@@ -71,7 +71,7 @@ def entrada(data: dict):
        cur.close()
        conn.close()
 # =========================
-# 🔴 SAÍDA (ID OU PLACA)
+# 🔴 SAÍDA
 # =========================
 @app.post("/saida")
 def saida(data: dict):
@@ -80,7 +80,7 @@ def saida(data: dict):
        cur = conn.cursor()
        ticket_id = data.get("ticket_id")
        placa = data.get("placa")
-       # 🔍 busca
+       # 🔍 BUSCA
        if ticket_id:
            cur.execute("""
                SELECT id, tipo_veiculo, data_entrada
@@ -125,54 +125,122 @@ def saida(data: dict):
 # 💰 CÁLCULO
 # =========================
 def calcular_valor(entrada, saida, tipo):
-   from datetime import timedelta, time
-   # ⏱️ diferença total
    diff = saida - entrada
    minutos = diff.total_seconds() / 60
    horas = diff.total_seconds() / 3600
-   # 🟢 TOLERÂNCIA
+   # tolerância
    if minutos <= 5:
        return 0
-   # 🏍️ MOTO (fixo sempre)
+   # moto
    if tipo == "moto":
        return 15
-   # 🎯 MESMO DIA
+   # mesmo dia
    if entrada.date() == saida.date():
-       # até 1h
        if horas <= 1:
-           if tipo == "grande":
-               return 20
-           else:
-               return 10
-       # mais de 1h
+           return 20 if tipo == "grande" else 10
        else:
-           if tipo == "grande":
-               return 30
-           else:
-               return 20
-   # 🔴 OUTRO DIA (virou o dia)
+           return 30 if tipo == "grande" else 20
+   # virou o dia
+   fechamento_dt = entrada.replace(hour=18, minute=0, second=0, microsecond=0)
+   if entrada > fechamento_dt:
+       inicio = entrada
    else:
-       fechamento = time(18, 0)
-       # pega o fechamento do dia da entrada
-       fechamento_dt = entrada.replace(
-           hour=18,
-           minute=0,
-           second=0,
-           microsecond=0
-       )
-       # se entrou depois do fechamento → usa entrada mesmo
-       if entrada > fechamento_dt:
-           inicio_calculo = entrada
-       else:
-           inicio_calculo = fechamento_dt
-       diff_noite = saida - inicio_calculo
-       horas_noite = diff_noite.total_seconds() / 3600
-       # 💰 valor base (primeira diária)
-       if tipo == "grande":
-           valor = 30
-       else:
-           valor = 20
-       # 🧮 a cada 12h adiciona diária
-       adicionais = int(horas_noite // 12)
-       valor += adicionais * valor
-       return valor
+       inicio = fechamento_dt
+   diff_noite = saida - inicio
+   horas_noite = diff_noite.total_seconds() / 3600
+   base = 30 if tipo == "grande" else 20
+   adicionais = int(horas_noite // 12)
+   return base + (adicionais * base)
+# =========================
+# 📊 RELATÓRIOS
+# =========================
+@app.post("/relatorios")
+def relatorios(filtro: dict):
+   try:
+       conn = get_conn()
+       cur = conn.cursor()
+       data_inicio = filtro.get("data_inicio")
+       data_fim = filtro.get("data_fim")
+       tipo = filtro.get("tipo")
+       where = []
+       params = []
+       if data_inicio:
+           where.append("data_entrada >= %s")
+           params.append(data_inicio)
+       if data_fim:
+           where.append("data_entrada <= %s")
+           params.append(data_fim)
+       if tipo and tipo != "todos":
+           where.append("tipo_veiculo = %s")
+           params.append(tipo)
+       where_sql = ""
+       if where:
+           where_sql = "WHERE " + " AND ".join(where)
+       # 🚗 total veículos
+       cur.execute(f"""
+           SELECT COUNT(*)
+           FROM estacionamento.tickets
+           {where_sql}
+       """, params)
+       total_veiculos = cur.fetchone()[0]
+       # 💰 faturamento (corrigido)
+       where_fat = where.copy()
+       params_fat = params.copy()
+       where_fat.append("status = 'finalizado'")
+       where_fat_sql = "WHERE " + " AND ".join(where_fat)
+       cur.execute(f"""
+           SELECT COALESCE(SUM(valor),0)
+           FROM estacionamento.tickets
+           {where_fat_sql}
+       """, params_fat)
+       valor_total = cur.fetchone()[0] or 0
+       # ⏰ por hora
+       cur.execute(f"""
+           SELECT EXTRACT(HOUR FROM data_entrada), COUNT(*)
+           FROM estacionamento.tickets
+           {where_sql}
+           GROUP BY 1
+           ORDER BY 1
+       """, params)
+       por_hora = [
+           {"hora": int(h), "total": t}
+           for h, t in cur.fetchall()
+       ]
+       # 📅 por dia
+       cur.execute(f"""
+           SELECT DATE(data_entrada), COUNT(*)
+           FROM estacionamento.tickets
+           {where_sql}
+           GROUP BY 1
+           ORDER BY 1
+       """, params)
+       por_dia = [
+           {"data": str(d), "total": t}
+           for d, t in cur.fetchall()
+       ]
+       # 🏆 top marcas
+       cur.execute(f"""
+           SELECT marca, COUNT(*)
+           FROM estacionamento.tickets
+           {where_sql}
+           GROUP BY marca
+           ORDER BY COUNT(*) DESC
+           LIMIT 5
+       """, params)
+       por_marca = [
+           {"marca": m, "total": t}
+           for m, t in cur.fetchall()
+       ]
+       return {
+           "total_veiculos": total_veiculos,
+           "valor_total": float(valor_total),
+           "por_hora": por_hora,
+           "por_dia": por_dia,
+           "por_marca": por_marca
+       }
+   except Exception as e:
+       print("❌ ERRO RELATORIOS:", str(e))
+       return {"erro": str(e)}
+   finally:
+       cur.close()
+       conn.close()
