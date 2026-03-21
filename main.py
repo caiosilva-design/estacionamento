@@ -7,9 +7,7 @@ import os
 import pytz
 # 🔐 LOGIN
 from jose import jwt
-from passlib.context import CryptContext
 app = FastAPI()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # =========================
 # 🔐 CONFIG LOGIN
 # =========================
