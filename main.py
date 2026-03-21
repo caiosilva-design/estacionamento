@@ -1,12 +1,21 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, time
 import psycopg2
 import os
 import pytz
+# 🔐 LOGIN
+from jose import jwt
+from passlib.context import CryptContext
 app = FastAPI()
 # =========================
-# 🌍 TIMEZONE BRASIL
+# 🔐 CONFIG LOGIN
+# =========================
+SECRET_KEY = "SUPER_SECRET_KEY_123"
+ALGORITHM = "HS256"
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# =========================
+# 🌍 TIMEZONE
 # =========================
 tz = pytz.timezone("America/Sao_Paulo")
 # =========================
@@ -25,17 +34,66 @@ app.add_middleware(
 def get_conn():
    return psycopg2.connect(os.getenv("DATABASE_URL"))
 # =========================
+# 🔐 PEGAR USER DO TOKEN
+# =========================
+def get_user_id(authorization: str = Header(None)):
+   try:
+       if not authorization:
+           return None
+       token = authorization.replace("Bearer ", "")
+       payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+       return payload.get("user_id")
+   except:
+       return None
+# =========================
 # 🟢 HEALTHCHECK
 # =========================
 @app.get("/")
 def home():
    return {"status": "ok"}
 # =========================
-# 🟢 ENTRADA
+# 📝 REGISTER
+# =========================
+@app.post("/register")
+def register(data: dict):
+   conn = get_conn()
+   cur = conn.cursor()
+   senha_hash = pwd_context.hash(data.get("senha"))
+   cur.execute("""
+       INSERT INTO users (nome, email, senha)
+       VALUES (%s, %s, %s)
+       RETURNING id
+   """, (
+       data.get("nome"),
+       data.get("email"),
+       senha_hash
+   ))
+   user_id = cur.fetchone()[0]
+   conn.commit()
+   return {"ok": True, "user_id": user_id}
+# =========================
+# 🔐 LOGIN
+# =========================
+@app.post("/login")
+def login(data: dict):
+   conn = get_conn()
+   cur = conn.cursor()
+   cur.execute("SELECT id, senha FROM users WHERE email = %s", (data.get("email"),))
+   user = cur.fetchone()
+   if not user:
+       return {"erro": "Usuário não encontrado"}
+   user_id, senha_hash = user
+   if not pwd_context.verify(data.get("senha"), senha_hash):
+       return {"erro": "Senha inválida"}
+   token = jwt.encode({"user_id": user_id}, SECRET_KEY, algorithm=ALGORITHM)
+   return {"token": token}
+# =========================
+# 🟢 ENTRADA (COM USER)
 # =========================
 @app.post("/entrada")
-def entrada(data: dict):
+def entrada(data: dict, authorization: str = Header(None)):
    try:
+       user_id = get_user_id(authorization)
        conn = get_conn()
        cur = conn.cursor()
        now = datetime.now(tz)
@@ -47,15 +105,16 @@ def entrada(data: dict):
            return {"erro": "Placa obrigatória"}
        cur.execute("""
            INSERT INTO estacionamento.tickets
-           (placa, marca, modelo, tipo_veiculo, data_entrada, status)
-           VALUES (%s, %s, %s, %s, %s, 'ativo')
+           (placa, marca, modelo, tipo_veiculo, data_entrada, status, user_id)
+           VALUES (%s, %s, %s, %s, %s, 'ativo', %s)
            RETURNING id
        """, (
            placa,
            marca,
            modelo,
            tipo,
-           now
+           now,
+           user_id
        ))
        ticket_id = cur.fetchone()[0]
        conn.commit()
@@ -74,27 +133,27 @@ def entrada(data: dict):
 # 🔴 SAÍDA
 # =========================
 @app.post("/saida")
-def saida(data: dict):
+def saida(data: dict, authorization: str = Header(None)):
    try:
+       user_id = get_user_id(authorization)
        conn = get_conn()
        cur = conn.cursor()
        ticket_id = data.get("ticket_id")
        placa = data.get("placa")
-       # 🔍 BUSCA
        if ticket_id:
            cur.execute("""
                SELECT id, tipo_veiculo, data_entrada
                FROM estacionamento.tickets
-               WHERE id = %s AND status = 'ativo'
-           """, (ticket_id,))
+               WHERE id = %s AND status = 'ativo' AND user_id = %s
+           """, (ticket_id, user_id))
        elif placa:
            cur.execute("""
                SELECT id, tipo_veiculo, data_entrada
                FROM estacionamento.tickets
-               WHERE placa = %s AND status = 'ativo'
+               WHERE placa = %s AND status = 'ativo' AND user_id = %s
                ORDER BY data_entrada DESC
                LIMIT 1
-           """, (placa,))
+           """, (placa, user_id))
        else:
            return {"erro": "Informe ticket_id ou placa"}
        ticket = cur.fetchone()
@@ -128,42 +187,36 @@ def calcular_valor(entrada, saida, tipo):
    diff = saida - entrada
    minutos = diff.total_seconds() / 60
    horas = diff.total_seconds() / 3600
-   # tolerância
    if minutos <= 5:
        return 0
-   # moto
    if tipo == "moto":
        return 15
-   # mesmo dia
    if entrada.date() == saida.date():
        if horas <= 1:
            return 20 if tipo == "grande" else 10
        else:
            return 30 if tipo == "grande" else 20
-   # virou o dia
    fechamento_dt = entrada.replace(hour=18, minute=0, second=0, microsecond=0)
-   if entrada > fechamento_dt:
-       inicio = entrada
-   else:
-       inicio = fechamento_dt
+   inicio = entrada if entrada > fechamento_dt else fechamento_dt
    diff_noite = saida - inicio
    horas_noite = diff_noite.total_seconds() / 3600
    base = 30 if tipo == "grande" else 20
    adicionais = int(horas_noite // 12)
    return base + (adicionais * base)
 # =========================
-# 📊 RELATÓRIOS
+# 📊 RELATÓRIOS (COM USER)
 # =========================
 @app.post("/relatorios")
-def relatorios(filtro: dict):
+def relatorios(filtro: dict, authorization: str = Header(None)):
    try:
+       user_id = get_user_id(authorization)
        conn = get_conn()
        cur = conn.cursor()
        data_inicio = filtro.get("data_inicio")
        data_fim = filtro.get("data_fim")
        tipo = filtro.get("tipo")
-       where = []
-       params = []
+       where = ["user_id = %s"]
+       params = [user_id]
        if data_inicio:
            where.append("data_entrada >= %s")
            params.append(data_inicio)
@@ -173,52 +226,36 @@ def relatorios(filtro: dict):
        if tipo and tipo != "todos":
            where.append("tipo_veiculo = %s")
            params.append(tipo)
-       where_sql = ""
-       if where:
-           where_sql = "WHERE " + " AND ".join(where)
-       # 🚗 total veículos
+       where_sql = "WHERE " + " AND ".join(where)
+       # 🚗 total
        cur.execute(f"""
-           SELECT COUNT(*)
-           FROM estacionamento.tickets
-           {where_sql}
+           SELECT COUNT(*) FROM estacionamento.tickets {where_sql}
        """, params)
        total_veiculos = cur.fetchone()[0]
-       # 💰 faturamento (corrigido)
-       where_fat = where.copy()
-       params_fat = params.copy()
-       where_fat.append("status = 'finalizado'")
-       where_fat_sql = "WHERE " + " AND ".join(where_fat)
+       # 💰 faturamento
        cur.execute(f"""
            SELECT COALESCE(SUM(valor),0)
            FROM estacionamento.tickets
-           {where_fat_sql}
-       """, params_fat)
-       valor_total = cur.fetchone()[0] or 0
+           {where_sql} AND status = 'finalizado'
+       """, params)
+       valor_total = cur.fetchone()[0]
        # ⏰ por hora
        cur.execute(f"""
            SELECT EXTRACT(HOUR FROM data_entrada), COUNT(*)
            FROM estacionamento.tickets
            {where_sql}
-           GROUP BY 1
-           ORDER BY 1
+           GROUP BY 1 ORDER BY 1
        """, params)
-       por_hora = [
-           {"hora": int(h), "total": t}
-           for h, t in cur.fetchall()
-       ]
+       por_hora = [{"hora": int(h), "total": t} for h, t in cur.fetchall()]
        # 📅 por dia
        cur.execute(f"""
            SELECT DATE(data_entrada), COUNT(*)
            FROM estacionamento.tickets
            {where_sql}
-           GROUP BY 1
-           ORDER BY 1
+           GROUP BY 1 ORDER BY 1
        """, params)
-       por_dia = [
-           {"data": str(d), "total": t}
-           for d, t in cur.fetchall()
-       ]
-       # 🏆 top marcas
+       por_dia = [{"dia": str(d), "total": t} for d, t in cur.fetchall()]
+       # 🏆 marcas
        cur.execute(f"""
            SELECT marca, COUNT(*)
            FROM estacionamento.tickets
@@ -227,10 +264,7 @@ def relatorios(filtro: dict):
            ORDER BY COUNT(*) DESC
            LIMIT 5
        """, params)
-       por_marca = [
-           {"marca": m, "total": t}
-           for m, t in cur.fetchall()
-       ]
+       por_marca = [{"marca": m, "total": t} for m, t in cur.fetchall()]
        return {
            "total_veiculos": total_veiculos,
            "valor_total": float(valor_total),
