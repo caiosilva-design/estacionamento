@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime, time
+from datetime import datetime
 from passlib.context import CryptContext
 import psycopg2
 import os
@@ -51,14 +51,12 @@ def get_user_id(authorization: str = Header(None)):
 @app.get("/")
 def home():
    return {"status": "ok"}
-
 # =========================
-# 🔑 GERAR HASH (TEMPORÁRIO)
+# 🔑 GERAR HASH
 # =========================
 @app.get("/hash")
 def gerar_hash(senha: str):
    return {"hash": pwd_context.hash(senha)}
-   
 # =========================
 # 📝 REGISTER
 # =========================
@@ -80,23 +78,43 @@ def register(data: dict):
    conn.commit()
    return {"ok": True, "user_id": user_id}
 # =========================
-# 🔐 LOGIN
+# 🔐 LOGIN (🔥 HÍBRIDO)
 # =========================
 @app.post("/login")
 def login(data: dict):
-   conn = get_conn()
-   cur = conn.cursor()
-   cur.execute("SELECT id, senha FROM users WHERE email = %s", (data.get("email"),))
-   user = cur.fetchone()
-   if not user:
-       return {"erro": "Usuário não encontrado"}
-   user_id, senha_hash = user
-   if not pwd_context.verify(data.get("senha"), senha_hash):
-       return {"erro": "Senha inválida"}
-   token = jwt.encode({"user_id": user_id}, SECRET_KEY, algorithm=ALGORITHM)
-   return {"token": token}
+   try:
+       conn = get_conn()
+       cur = conn.cursor()
+       email = data.get("email")
+       senha_input = data.get("senha")
+       cur.execute("SELECT id, senha FROM users WHERE email = %s", (email,))
+       user = cur.fetchone()
+       if not user:
+           return {"erro": "Usuário não encontrado"}
+       user_id, senha_db = user
+       senha_valida = False
+       # 🔐 tenta bcrypt
+       try:
+           if pwd_context.verify(senha_input, senha_db):
+               senha_valida = True
+       except:
+           pass
+       # 🔥 fallback senha crua
+       if not senha_valida:
+           if senha_input == senha_db:
+               senha_valida = True
+       if not senha_valida:
+           return {"erro": "Senha inválida"}
+       token = jwt.encode({"user_id": user_id}, SECRET_KEY, algorithm=ALGORITHM)
+       return {"token": token}
+   except Exception as e:
+       print("❌ ERRO LOGIN:", str(e))
+       return {"erro": str(e)}
+   finally:
+       cur.close()
+       conn.close()
 # =========================
-# 🟢 ENTRADA (COM USER)
+# 🟢 ENTRADA
 # =========================
 @app.post("/entrada")
 def entrada(data: dict, authorization: str = Header(None)):
@@ -212,7 +230,7 @@ def calcular_valor(entrada, saida, tipo):
    adicionais = int(horas_noite // 12)
    return base + (adicionais * base)
 # =========================
-# 📊 RELATÓRIOS (COM USER)
+# 📊 RELATÓRIOS
 # =========================
 @app.post("/relatorios")
 def relatorios(filtro: dict, authorization: str = Header(None)):
@@ -236,9 +254,7 @@ def relatorios(filtro: dict, authorization: str = Header(None)):
            params.append(tipo)
        where_sql = "WHERE " + " AND ".join(where)
        # 🚗 total
-       cur.execute(f"""
-           SELECT COUNT(*) FROM estacionamento.tickets {where_sql}
-       """, params)
+       cur.execute(f"SELECT COUNT(*) FROM estacionamento.tickets {where_sql}", params)
        total_veiculos = cur.fetchone()[0]
        # 💰 faturamento
        cur.execute(f"""
