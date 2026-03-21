@@ -66,7 +66,7 @@ def register(data: dict):
    cur = conn.cursor()
    senha_hash = pwd_context.hash(data.get("senha"))
    cur.execute("""
-       INSERT INTO users (nome, email, senha)
+       INSERT INTO estacionamento.users (nome, email, senha)
        VALUES (%s, %s, %s)
        RETURNING id
    """, (
@@ -87,7 +87,7 @@ def login(data: dict):
        cur = conn.cursor()
        email = data.get("email")
        senha_input = data.get("senha")
-       cur.execute("SELECT id, senha FROM users WHERE email = %s", (email,))
+       cur.execute("SELECT id, senha FROM estacionamento.users WHERE email = %s", (email,))
        user = cur.fetchone()
        if not user:
            return {"erro": "Usuário não encontrado"}
