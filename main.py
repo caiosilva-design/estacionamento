@@ -222,7 +222,7 @@ def saida(data: dict, authorization: str = Header(None)):
        if conn:
            conn.close()
 # =========================
-# 📊 RELATÓRIOS
+# 📊 RELATÓRIOS COMPLETO
 # =========================
 @app.post("/relatorios")
 def relatorios(filtro: dict, authorization: str = Header(None)):
@@ -247,17 +247,52 @@ def relatorios(filtro: dict, authorization: str = Header(None)):
            where.append("tipo_veiculo = %s")
            params.append(tipo)
        where_sql = "WHERE " + " AND ".join(where)
-       cur.execute(f"SELECT COUNT(*) FROM estacionamento.tickets {where_sql}", params)
+       # 🔢 TOTAL VEÍCULOS
+       cur.execute(f"""
+           SELECT COUNT(*) FROM estacionamento.tickets
+           {where_sql}
+       """, params)
        total_veiculos = cur.fetchone()[0]
+       # 💰 FATURAMENTO
        cur.execute(f"""
            SELECT COALESCE(SUM(valor),0)
            FROM estacionamento.tickets
            {where_sql} AND status = 'finalizado'
        """, params)
        valor_total = cur.fetchone()[0]
+       # ⏰ POR HORA
+       cur.execute(f"""
+           SELECT EXTRACT(HOUR FROM data_entrada) as hora, COUNT(*)
+           FROM estacionamento.tickets
+           {where_sql}
+           GROUP BY hora
+           ORDER BY hora
+       """, params)
+       por_hora = [{"hora": int(h), "total": t} for h, t in cur.fetchall()]
+       # 📅 POR DIA
+       cur.execute(f"""
+           SELECT DATE(data_entrada) as dia, COUNT(*)
+           FROM estacionamento.tickets
+           {where_sql}
+           GROUP BY dia
+           ORDER BY dia
+       """, params)
+       por_dia = [{"dia": str(d), "total": t} for d, t in cur.fetchall()]
+       # 🚗 POR MARCA
+       cur.execute(f"""
+           SELECT marca, COUNT(*)
+           FROM estacionamento.tickets
+           {where_sql}
+           GROUP BY marca
+           ORDER BY COUNT(*) DESC
+       """, params)
+       por_marca = [{"marca": m, "total": t} for m, t in cur.fetchall()]
        return {
            "total_veiculos": total_veiculos,
-           "valor_total": float(valor_total)
+           "valor_total": float(valor_total),
+           "por_hora": por_hora,
+           "por_dia": por_dia,
+           "por_marca": por_marca
        }
    except Exception as e:
        print("❌ ERRO RELATORIOS:", str(e))
