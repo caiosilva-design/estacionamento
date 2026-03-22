@@ -203,11 +203,15 @@ def saida(data: dict, authorization: str = Header(None)):
            WHERE id = %s
        """, (now, valor, ticket_id))
        conn.commit()
-       return {
+      return {
            "ok": True,
            "ticket_id": ticket_id,
-           "valor": valor,
-           "saida": now.isoformat()
+           "placa": placa,
+           "marca": marca,
+           "modelo": modelo,
+           "entrada": entrada.isoformat(),
+           "saida": now.isoformat(),
+           "valor": valor
        }
    except Exception as e:
        print("❌ ERRO SAIDA:", str(e))
