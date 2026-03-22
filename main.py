@@ -174,21 +174,21 @@ def saida(data: dict, authorization: str = Header(None)):
        conn = get_conn()
        cur = conn.cursor()
        ticket_id = data.get("ticket_id")
-       placa = data.get("placa")
+       placa_input = data.get("placa")
        if ticket_id:
            cur.execute("""
                SELECT id, tipo_veiculo, data_entrada, placa, marca, modelo
                FROM estacionamento.tickets
                WHERE id = %s AND status = 'ativo' AND user_id = %s
            """, (ticket_id, user_id))
-       elif placa:
+       elif placa_input:
            cur.execute("""
-               SELECT id, tipo_veiculo, data_entrada
+               SELECT id, tipo_veiculo, data_entrada, placa, marca, modelo
                FROM estacionamento.tickets
                WHERE placa = %s AND status = 'ativo' AND user_id = %s
                ORDER BY data_entrada DESC
                LIMIT 1
-           """, (placa, user_id))
+           """, (placa_input, user_id))
        else:
            return {"erro": "Informe ticket_id ou placa"}
        ticket = cur.fetchone()
@@ -203,7 +203,7 @@ def saida(data: dict, authorization: str = Header(None)):
            WHERE id = %s
        """, (now, valor, ticket_id))
        conn.commit()
-      return {
+       return {
            "ok": True,
            "ticket_id": ticket_id,
            "placa": placa,
