@@ -203,6 +203,46 @@ def saida(data: dict, authorization: str = Header(None)):
    except Exception as e:
        print("❌ ERRO SAIDA:", str(e))
        return {"erro": str(e)}
+finally:
+   cur.close()
+   conn.close()
+# =========================
+# 🚗 VEÍCULOS NO PÁTIO (ABERTOS)
+# =========================
+@app.get("/abertos")
+def veiculos_abertos(authorization: str = Header(None)):
+   try:
+       user_id = get_user_id(authorization)
+       if not user_id:
+           return {"erro": "Não autorizado"}
+       conn = get_conn()
+       cur = conn.cursor()
+       cur.execute("""
+           SELECT
+               id,
+               placa,
+               marca,
+               modelo,
+               data_entrada
+           FROM estacionamento.tickets
+           WHERE status = 'ativo'
+           AND user_id = %s
+           ORDER BY data_entrada DESC
+       """, (user_id,))
+       rows = cur.fetchall()
+       resultado = []
+       for r in rows:
+           resultado.append({
+               "ticket_id": r[0],
+               "placa": r[1],
+               "marca": r[2],
+               "modelo": r[3],
+               "entrada": r[4].isoformat() if r[4] else None
+           })
+       return resultado
+   except Exception as e:
+       print("❌ ERRO ABERTOS:", str(e))
+       return []
    finally:
        cur.close()
        conn.close()
