@@ -194,7 +194,7 @@ def saida(data: dict, authorization: str = Header(None)):
        ticket = cur.fetchone()
        if not ticket:
            return {"erro": "Ticket não encontrado"}
-       ticket_id, tipo, entrada = ticket
+       ticket_id, tipo, entrada, placa, marca, modelo = ticket
        now = datetime.now(tz)
        valor = calcular_valor(entrada, now, tipo)
        cur.execute("""
