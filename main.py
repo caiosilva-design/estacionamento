@@ -177,7 +177,7 @@ def saida(data: dict, authorization: str = Header(None)):
        placa = data.get("placa")
        if ticket_id:
            cur.execute("""
-               SELECT id, tipo_veiculo, data_entrada
+               SELECT id, tipo_veiculo, data_entrada, placa, marca, modelo
                FROM estacionamento.tickets
                WHERE id = %s AND status = 'ativo' AND user_id = %s
            """, (ticket_id, user_id))
