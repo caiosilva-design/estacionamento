@@ -5,7 +5,6 @@ from passlib.context import CryptContext
 import psycopg2
 import os
 import pytz
-# 🔐 LOGIN
 from jose import jwt
 app = FastAPI()
 # =========================
@@ -62,26 +61,38 @@ def gerar_hash(senha: str):
 # =========================
 @app.post("/register")
 def register(data: dict):
-   conn = get_conn()
-   cur = conn.cursor()
-   senha_hash = pwd_context.hash(data.get("senha"))
-   cur.execute("""
-       INSERT INTO estacionamento.users (nome, email, senha)
-       VALUES (%s, %s, %s)
-       RETURNING id
-   """, (
-       data.get("nome"),
-       data.get("email"),
-       senha_hash
-   ))
-   user_id = cur.fetchone()[0]
-   conn.commit()
-   return {"ok": True, "user_id": user_id}
+   conn = None
+   cur = None
+   try:
+       conn = get_conn()
+       cur = conn.cursor()
+       senha_hash = pwd_context.hash(data.get("senha"))
+       cur.execute("""
+           INSERT INTO estacionamento.users (nome, email, senha)
+           VALUES (%s, %s, %s)
+           RETURNING id
+       """, (
+           data.get("nome"),
+           data.get("email"),
+           senha_hash
+       ))
+       user_id = cur.fetchone()[0]
+       conn.commit()
+       return {"ok": True, "user_id": user_id}
+   except Exception as e:
+       return {"erro": str(e)}
+   finally:
+       if cur:
+           cur.close()
+       if conn:
+           conn.close()
 # =========================
-# 🔐 LOGIN (🔥 HÍBRIDO)
+# 🔐 LOGIN
 # =========================
 @app.post("/login")
 def login(data: dict):
+   conn = None
+   cur = None
    try:
        conn = get_conn()
        cur = conn.cursor()
@@ -93,16 +104,13 @@ def login(data: dict):
            return {"erro": "Usuário não encontrado"}
        user_id, senha_db = user
        senha_valida = False
-       # 🔐 tenta bcrypt
        try:
            if pwd_context.verify(senha_input, senha_db):
                senha_valida = True
        except:
            pass
-       # 🔥 fallback senha crua
-       if not senha_valida:
-           if senha_input == senha_db:
-               senha_valida = True
+       if not senha_valida and senha_input == senha_db:
+           senha_valida = True
        if not senha_valida:
            return {"erro": "Senha inválida"}
        token = jwt.encode({"user_id": user_id}, SECRET_KEY, algorithm=ALGORITHM)
@@ -111,37 +119,34 @@ def login(data: dict):
        print("❌ ERRO LOGIN:", str(e))
        return {"erro": str(e)}
    finally:
-       cur.close()
-       conn.close()
+       if cur:
+           cur.close()
+       if conn:
+           conn.close()
 # =========================
 # 🟢 ENTRADA
 # =========================
 @app.post("/entrada")
 def entrada(data: dict, authorization: str = Header(None)):
+   conn = None
+   cur = None
    try:
        user_id = get_user_id(authorization)
        conn = get_conn()
        cur = conn.cursor()
        now = datetime.now(tz)
        placa = data.get("placa")
+       if not placa:
+           return {"erro": "Placa obrigatória"}
        marca = data.get("marca", "N/A")
        modelo = data.get("modelo", "N/A")
        tipo = data.get("tipo_veiculo", "pequeno")
-       if not placa:
-           return {"erro": "Placa obrigatória"}
        cur.execute("""
            INSERT INTO estacionamento.tickets
            (placa, marca, modelo, tipo_veiculo, data_entrada, status, user_id)
            VALUES (%s, %s, %s, %s, %s, 'ativo', %s)
            RETURNING id
-       """, (
-           placa,
-           marca,
-           modelo,
-           tipo,
-           now,
-           user_id
-       ))
+       """, (placa, marca, modelo, tipo, now, user_id))
        ticket_id = cur.fetchone()[0]
        conn.commit()
        return {
@@ -153,13 +158,17 @@ def entrada(data: dict, authorization: str = Header(None)):
        print("❌ ERRO ENTRADA:", str(e))
        return {"erro": str(e)}
    finally:
-       cur.close()
-       conn.close()
+       if cur:
+           cur.close()
+       if conn:
+           conn.close()
 # =========================
 # 🔴 SAÍDA
 # =========================
 @app.post("/saida")
 def saida(data: dict, authorization: str = Header(None)):
+   conn = None
+   cur = None
    try:
        user_id = get_user_id(authorization)
        conn = get_conn()
@@ -203,49 +212,57 @@ def saida(data: dict, authorization: str = Header(None)):
    except Exception as e:
        print("❌ ERRO SAIDA:", str(e))
        return {"erro": str(e)}
-finally:
-   cur.close()
-   conn.close()
+   finally:
+       if cur:
+           cur.close()
+       if conn:
+           conn.close()
 # =========================
-# 🚗 VEÍCULOS NO PÁTIO (ABERTOS)
+# 📊 RELATÓRIOS
 # =========================
-@app.get("/abertos")
-def veiculos_abertos(authorization: str = Header(None)):
+@app.post("/relatorios")
+def relatorios(filtro: dict, authorization: str = Header(None)):
+   conn = None
+   cur = None
    try:
        user_id = get_user_id(authorization)
-       if not user_id:
-           return {"erro": "Não autorizado"}
        conn = get_conn()
        cur = conn.cursor()
-       cur.execute("""
-           SELECT
-               id,
-               placa,
-               marca,
-               modelo,
-               data_entrada
+       data_inicio = filtro.get("data_inicio")
+       data_fim = filtro.get("data_fim")
+       tipo = filtro.get("tipo")
+       where = ["user_id = %s"]
+       params = [user_id]
+       if data_inicio:
+           where.append("data_entrada >= %s")
+           params.append(data_inicio)
+       if data_fim:
+           where.append("data_entrada <= %s")
+           params.append(data_fim)
+       if tipo and tipo != "todos":
+           where.append("tipo_veiculo = %s")
+           params.append(tipo)
+       where_sql = "WHERE " + " AND ".join(where)
+       cur.execute(f"SELECT COUNT(*) FROM estacionamento.tickets {where_sql}", params)
+       total_veiculos = cur.fetchone()[0]
+       cur.execute(f"""
+           SELECT COALESCE(SUM(valor),0)
            FROM estacionamento.tickets
-           WHERE status = 'ativo'
-           AND user_id = %s
-           ORDER BY data_entrada DESC
-       """, (user_id,))
-       rows = cur.fetchall()
-       resultado = []
-       for r in rows:
-           resultado.append({
-               "ticket_id": r[0],
-               "placa": r[1],
-               "marca": r[2],
-               "modelo": r[3],
-               "entrada": r[4].isoformat() if r[4] else None
-           })
-       return resultado
+           {where_sql} AND status = 'finalizado'
+       """, params)
+       valor_total = cur.fetchone()[0]
+       return {
+           "total_veiculos": total_veiculos,
+           "valor_total": float(valor_total)
+       }
    except Exception as e:
-       print("❌ ERRO ABERTOS:", str(e))
-       return []
+       print("❌ ERRO RELATORIOS:", str(e))
+       return {"erro": str(e)}
    finally:
-       cur.close()
-       conn.close()
+       if cur:
+           cur.close()
+       if conn:
+           conn.close()
 # =========================
 # 💰 CÁLCULO
 # =========================
@@ -269,76 +286,3 @@ def calcular_valor(entrada, saida, tipo):
    base = 30 if tipo == "grande" else 20
    adicionais = int(horas_noite // 12)
    return base + (adicionais * base)
-# =========================
-# 📊 RELATÓRIOS
-# =========================
-@app.post("/relatorios")
-def relatorios(filtro: dict, authorization: str = Header(None)):
-   try:
-       user_id = get_user_id(authorization)
-       conn = get_conn()
-       cur = conn.cursor()
-       data_inicio = filtro.get("data_inicio")
-       data_fim = filtro.get("data_fim")
-       tipo = filtro.get("tipo")
-       where = ["user_id = %s"]
-       params = [user_id]
-       if data_inicio:
-           where.append("data_entrada >= %s")
-           params.append(data_inicio)
-       if data_fim:
-           where.append("data_entrada <= %s")
-           params.append(data_fim)
-       if tipo and tipo != "todos":
-           where.append("tipo_veiculo = %s")
-           params.append(tipo)
-       where_sql = "WHERE " + " AND ".join(where)
-       # 🚗 total
-       cur.execute(f"SELECT COUNT(*) FROM estacionamento.tickets {where_sql}", params)
-       total_veiculos = cur.fetchone()[0]
-       # 💰 faturamento
-       cur.execute(f"""
-           SELECT COALESCE(SUM(valor),0)
-           FROM estacionamento.tickets
-           {where_sql} AND status = 'finalizado'
-       """, params)
-       valor_total = cur.fetchone()[0]
-       # ⏰ por hora
-       cur.execute(f"""
-           SELECT EXTRACT(HOUR FROM data_entrada), COUNT(*)
-           FROM estacionamento.tickets
-           {where_sql}
-           GROUP BY 1 ORDER BY 1
-       """, params)
-       por_hora = [{"hora": int(h), "total": t} for h, t in cur.fetchall()]
-       # 📅 por dia
-       cur.execute(f"""
-           SELECT DATE(data_entrada), COUNT(*)
-           FROM estacionamento.tickets
-           {where_sql}
-           GROUP BY 1 ORDER BY 1
-       """, params)
-       por_dia = [{"dia": str(d), "total": t} for d, t in cur.fetchall()]
-       # 🏆 marcas
-       cur.execute(f"""
-           SELECT marca, COUNT(*)
-           FROM estacionamento.tickets
-           {where_sql}
-           GROUP BY marca
-           ORDER BY COUNT(*) DESC
-           LIMIT 5
-       """, params)
-       por_marca = [{"marca": m, "total": t} for m, t in cur.fetchall()]
-       return {
-           "total_veiculos": total_veiculos,
-           "valor_total": float(valor_total),
-           "por_hora": por_hora,
-           "por_dia": por_dia,
-           "por_marca": por_marca
-       }
-   except Exception as e:
-       print("❌ ERRO RELATORIOS:", str(e))
-       return {"erro": str(e)}
-   finally:
-       cur.close()
-       conn.close()
